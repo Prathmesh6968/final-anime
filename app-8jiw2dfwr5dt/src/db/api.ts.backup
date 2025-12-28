@@ -1,0 +1,407 @@
+import { supabase } from './supabase';
+import { api } from './restApi';
+import type {
+  AnimeData,
+  EpisodeData,
+  Profile,
+  Favorite,
+  Comment,
+  WatchHistory,
+  AnimeFilters,
+  PaginationParams,
+  PaginatedResponse,
+} from '@/types/types';
+
+// Anime API using direct REST calls
+export const animeApi = {
+  // Get paginated anime list with filters
+  async getAnimeList(
+    filters: AnimeFilters = {},
+    pagination: PaginationParams = { page: 1, pageSize: 12 }
+  ): Promise<PaginatedResponse<AnimeData>> {
+    try {
+      // Build query string
+      let queryParts: string[] = [];
+
+      // Apply search filter
+      if (filters.search) {
+        queryParts.push(`or=(title.ilike.*${filters.search}*,japanese.ilike.*${filters.search}*)`);
+      }
+
+      // Apply status filter
+      if (filters.status) {
+        queryParts.push(`status=eq.${filters.status}`);
+      }
+
+      // Apply rating filter
+      if (filters.rating) {
+        queryParts.push(`rating=eq.${filters.rating}`);
+      }
+
+      // Apply genre filter (simple contains check)
+      if (filters.genres && filters.genres.length > 0) {
+        const genreFilter = filters.genres.map(g => `genres.ilike.*${g}*`).join(',');
+        queryParts.push(`or=(${genreFilter})`);
+      }
+
+      // Apply sorting
+      let orderBy = 'order=created_at.desc';
+      if (filters.sortBy === 'score') {
+        orderBy = 'order=score.desc';
+      } else if (filters.sortBy === 'aired') {
+        orderBy = 'order=aired.desc';
+      } else if (filters.sortBy === 'title') {
+        orderBy = 'order=title.asc';
+      }
+      queryParts.push(orderBy);
+
+      // Apply pagination
+      const from = (pagination.page - 1) * pagination.pageSize;
+      const to = from + pagination.pageSize - 1;
+      queryParts.push(`limit=${pagination.pageSize}`);
+      queryParts.push(`offset=${from}`);
+
+      const queryString = queryParts.join('&');
+      const data = await api<AnimeData[]>(`anime_data?${queryString}`);
+
+      // Get total count (simplified - just return data length for now)
+      const total = data.length;
+
+      return {
+        data: Array.isArray(data) ? data : [],
+        total,
+        page: pagination.page,
+        pageSize: pagination.pageSize,
+        totalPages: Math.ceil(total / pagination.pageSize),
+      };
+    } catch (error) {
+      console.error('Error fetching anime list:', error);
+      return {
+        data: [],
+        total: 0,
+        page: pagination.page,
+        pageSize: pagination.pageSize,
+        totalPages: 0,
+      };
+    }
+  },
+
+  // Get anime by slug
+  async getAnimeBySlug(slug: string): Promise<AnimeData | null> {
+    try {
+      const data = await api<AnimeData[]>(`anime_data?slug=eq.${slug}`);
+      return data && data.length > 0 ? data[0] : null;
+    } catch (error) {
+      console.error('Error fetching anime:', error);
+      return null;
+    }
+  },
+
+  // Get anime by ID
+  async getAnimeById(id: string): Promise<AnimeData | null> {
+    try {
+      const data = await api<AnimeData[]>(`anime_data?id=eq.${id}`);
+      return data && data.length > 0 ? data[0] : null;
+    } catch (error) {
+      console.error('Error fetching anime:', error);
+      return null;
+    }
+      .from('anime_data')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error fetching anime:', error);
+      return null;
+    }
+
+    return data;
+  },
+};
+
+// Episodes API
+export const episodesApi = {
+  // Get episodes for an anime
+  async getEpisodesByAnimeId(animeId: string): Promise<EpisodeData[]> {
+    const { data, error } = await supabase
+      .from('episodes_data')
+      .select('*')
+      .eq('anime_id', animeId)
+      .order('season', { ascending: true })
+      .order('episode', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching episodes:', error);
+      return [];
+    }
+
+    return Array.isArray(data) ? data : [];
+  },
+
+  // Get specific episode
+  async getEpisode(animeId: string, season: number, episode: number): Promise<EpisodeData | null> {
+    const { data, error } = await supabase
+      .from('episodes_data')
+      .select('*')
+      .eq('anime_id', animeId)
+      .eq('season', season)
+      .eq('episode', episode)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error fetching episode:', error);
+      return null;
+    }
+
+    return data;
+  },
+};
+
+// Favorites API
+export const favoritesApi = {
+  // Get user favorites
+  async getUserFavorites(userId: string): Promise<Favorite[]> {
+    const { data, error } = await supabase
+      .from('favorites')
+      .select('*, anime:anime_data(*)')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching favorites:', error);
+      return [];
+    }
+
+    return Array.isArray(data) ? data : [];
+  },
+
+  // Check if anime is favorited
+  async isFavorited(userId: string, animeId: string): Promise<boolean> {
+    const { data, error } = await supabase
+      .from('favorites')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('anime_id', animeId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error checking favorite:', error);
+      return false;
+    }
+
+    return !!data;
+  },
+
+  // Add to favorites
+  async addFavorite(userId: string, animeId: string): Promise<boolean> {
+    const { error } = await supabase
+      .from('favorites')
+      .insert({ user_id: userId, anime_id: animeId });
+
+    if (error) {
+      console.error('Error adding favorite:', error);
+      return false;
+    }
+
+    return true;
+  },
+
+  // Remove from favorites
+  async removeFavorite(userId: string, animeId: string): Promise<boolean> {
+    const { error } = await supabase
+      .from('favorites')
+      .delete()
+      .eq('user_id', userId)
+      .eq('anime_id', animeId);
+
+    if (error) {
+      console.error('Error removing favorite:', error);
+      return false;
+    }
+
+    return true;
+  },
+};
+
+// Comments API
+export const commentsApi = {
+  // Get comments for an anime
+  async getCommentsByAnimeId(animeId: string): Promise<Comment[]> {
+    const { data, error } = await supabase
+      .from('comments')
+      .select('*, user:profiles!comments_user_id_fkey(id, username, avatar_url)')
+      .eq('anime_id', animeId)
+      .is('parent_id', null)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching comments:', error);
+      return [];
+    }
+
+    // Fetch replies for each comment
+    const comments = Array.isArray(data) ? data : [];
+    const commentsWithReplies = await Promise.all(
+      comments.map(async (comment) => {
+        const replies = await this.getReplies(comment.id);
+        return { ...comment, replies };
+      })
+    );
+
+    return commentsWithReplies;
+  },
+
+  // Get replies for a comment
+  async getReplies(parentId: string): Promise<Comment[]> {
+    const { data, error } = await supabase
+      .from('comments')
+      .select('*, user:profiles!comments_user_id_fkey(id, username, avatar_url)')
+      .eq('parent_id', parentId)
+      .order('created_at', { ascending: true });
+
+    if (error) {
+      console.error('Error fetching replies:', error);
+      return [];
+    }
+
+    return Array.isArray(data) ? data : [];
+  },
+
+  // Create comment
+  async createComment(
+    userId: string,
+    animeId: string,
+    content: string,
+    parentId: string | null = null
+  ): Promise<Comment | null> {
+    const { data, error } = await supabase
+      .from('comments')
+      .insert({
+        user_id: userId,
+        anime_id: animeId,
+        content,
+        parent_id: parentId,
+      })
+      .select('*, user:profiles!comments_user_id_fkey(id, username, avatar_url)')
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error creating comment:', error);
+      return null;
+    }
+
+    return data;
+  },
+
+  // Delete comment
+  async deleteComment(commentId: string): Promise<boolean> {
+    const { error } = await supabase.from('comments').delete().eq('id', commentId);
+
+    if (error) {
+      console.error('Error deleting comment:', error);
+      return false;
+    }
+
+    return true;
+  },
+};
+
+// Watch History API
+export const watchHistoryApi = {
+  // Get user watch history
+  async getUserWatchHistory(userId: string): Promise<WatchHistory[]> {
+    const { data, error } = await supabase
+      .from('watch_history')
+      .select('*, anime:anime_data(*)')
+      .eq('user_id', userId)
+      .order('last_watched', { ascending: false })
+      .limit(20);
+
+    if (error) {
+      console.error('Error fetching watch history:', error);
+      return [];
+    }
+
+    return Array.isArray(data) ? data : [];
+  },
+
+  // Update watch history
+  async updateWatchHistory(
+    userId: string,
+    animeId: string,
+    season: number,
+    episode: number
+  ): Promise<boolean> {
+    const { error } = await supabase.from('watch_history').upsert(
+      {
+        user_id: userId,
+        anime_id: animeId,
+        season,
+        episode,
+        last_watched: new Date().toISOString(),
+      },
+      {
+        onConflict: 'user_id,anime_id,season,episode',
+      }
+    );
+
+    if (error) {
+      console.error('Error updating watch history:', error);
+      return false;
+    }
+
+    return true;
+  },
+};
+
+// Profile API
+export const profileApi = {
+  // Get profile by ID
+  async getProfileById(id: string): Promise<Profile | null> {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .eq('id', id)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error fetching profile:', error);
+      return null;
+    }
+
+    return data;
+  },
+
+  // Update profile
+  async updateProfile(id: string, updates: Partial<Profile>): Promise<Profile | null> {
+    const { data, error } = await supabase
+      .from('profiles')
+      .update(updates)
+      .eq('id', id)
+      .select()
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error updating profile:', error);
+      return null;
+    }
+
+    return data;
+  },
+
+  // Get all profiles (admin only)
+  async getAllProfiles(): Promise<Profile[]> {
+    const { data, error } = await supabase
+      .from('profiles')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      console.error('Error fetching profiles:', error);
+      return [];
+    }
+
+    return Array.isArray(data) ? data : [];
+  },
+};
